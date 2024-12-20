@@ -1,230 +1,158 @@
-from typing import Any, Protocol, TypeVar, Generic, Literal
+from typing import Callable, TypeVar, Generic, Any, Self
 
+class Component:
+    Result = TypeVar("Result")
 
-Result = TypeVar("Result", covariant=True)
+    def __init__(self, type):
+        self.type = type
 
-class Condition:
-    def execute(self, entity):
-       raise NotImplementedError(f"{self.__class__.__name__} must implement execute method")
+    def __call__(self, entity: Any, id) -> 'Component.Result':
+        for (k, v) in entity.__dict__():
+            if isinstance(v, self.type):
+                return v
 
-class Entity(Condition):
-    def __init__(self, condition):
-        self.condition = condition
-
-    def execute(self, entity) -> None | Any:
-        if self.condition.execute(entity):
-            return self
-        return None
-
-    def component(self, identifier) -> None | Any:
-        return identifier.execute(self)
-
-    def __str__(self):
-        return str(self.__dict__)
-
-    def __repr__(self):
-        return str(self.__dict__)
-
-C = TypeVar("C", bound=Condition)
+C = TypeVar("C", bound=Component)
 
 class Query(Generic[C]):
-    def __init__(self, arg: C):
-        self.condition = arg
+    Result = TypeVar("Result")
 
-    def query(self, entities: dict[int, Any]) -> Any:
-        result = {}
-        for (id, entity) in entities.items():
-            r = self.condition.execute(entity)
-            if r is not None:
-                result[id] = r
-        return result
+    def __init__(self, *args, **kwargs) -> None:
+        if len(args) != 0 and len(kwargs) != 0:
+            raise ValueError("Query can only have positional or keyword arguments, not both")
+        if len(args) != 0:
+            self.construct_from_list(args)
+        elif len(kwargs) != 0:
+            self.construct_from_dict(kwargs)
 
+    Id = TypeVar("Id")
+
+    def construct_from_dict(self, dict):
+        def condition(entity: Any, id: Id) -> 'Component.Result':
+            new_dict = {}
+            for (k, v) in dict.items():
+                v = v(entity, id)
+                if v is None:
+                    return None
+                new_dict[k] = v
+            return new_dict
+        self.condition = condition
+
+    def construct_from_list(self, list):
+        def condition(entity: Any, id: Id) -> 'Component.Result':
+            new_list = []
+            for f in list:
+                f = f(entity, id)
+                if f is None:
+                    return None
+                new_list.append(f)
+            return new_list
+        self.condition = condition
+
+    def execute(self, entity: Any, id) -> 'Component.Result':
+        return self.condition(entity, id)
+
+    def __call__(self, entity: Any, id) -> 'Component.Result':
+        return self.execute(entity, id)
 
 class Single(Generic[C]):
-    def __init__(self, condition: C):
+    Result = TypeVar("Result")
+
+    def __init__(self, *args, **kwargs) -> None:
+        if len(args) != 0 and len(kwargs) != 0:
+            raise ValueError("Single can only have positional or keyword arguments, not both")
+        if len(args) != 0:
+            self.construct_from_list(args)
+        elif len(kwargs) != 0:
+            self.construct_from_dict(kwargs)
+
+    def construct_from_dict(self, dict):
+        def condition(entity: Any) -> 'Component.Result':
+            new_dict = {}
+            for (k, v) in dict.items():
+                v = v(entity)
+                if v is None:
+                    return None
+                new_dict[k] = v
+            return new_dict
         self.condition = condition
 
-    def query(self, entities: dict[int, Entity]) -> Any:
+    def construct_from_list(self, list):
+        def condition(entity: Any) -> 'Component.Result':
+            new_list = []
+            for f in list:
+                f = f(entity)
+                if f is None:
+                    return None
+                new_list.append(f)
+            return new_list
+        self.condition = condition
+
+    Id = TypeVar("Id")
+
+    def execute(self, entities: dict[Id, Any]) -> Any:
         for entity in entities.values():
-            r = self.condition.execute(entity)
-            if r:
-                return r
+            result = self.condition(entity)
+            if not result is None:
+                return result
         return None
 
-class ECS:
+E = TypeVar("E")
+
+class Id(Generic[E], Component):
+    def __init__(self, id: int):
+        self.id = id
+
+class World:
     def __init__(self):
-        self.entities = {}
-        self.pre = []
-        self.systems = []
-        self.post = []
-        self.id = 0
+        self.entities: dict[Id, Any] = {}
+        self.resources: dict[tuple[str, type], Any] = {}
+        self.systems: list[Callable[[Self], None]] = []
 
-    def query(self, query: Query) -> list[Entity]:
-        return query.query(self.entities)
+        self.cid = 0
 
-    def spawn(self, value) -> int:
-        if not isinstance(value, Entity):
-            raise ValueError("value must be an instance of Entity")
-        self.id += 1
-        self.entities[self.id] = value
-        return self.id
+    Spawn = TypeVar("Spawn")
+    def spawn(self, entity: Spawn) -> Id[Spawn]:
+        id = Id(self.cid)
+        self.entities[id] = entity
+        self.cid += 1
+        return id
 
-    def add_system(self, system):
+    def query(self, query: Query) -> "list[Query.Result]":
+        return list(filter(lambda x: not x is None, [query.execute(entity, id) for (id, entity) in self.entities.items()]))
+
+    def single(self, single: Single) -> "Single.Result":
+        return single.execute(self.entities)
+
+    def system(self, system: Callable[[Self], None]):
         self.systems.append(system)
-        return self
 
-    def add_pre(self, system):
-        self.pre.append(system)
-        return self
+    def register(self, name: str, resource: Any) -> None:
+        self.resources[(name, type(resource))] = resource
 
-    def add_post(self, system):
-        self.post.append(system)
-        return self
-
-    def system(self, querys, kind: Literal["pre"] | Literal["normal"] | Literal["post"] = "normal"):
-        def decorator(func):
-            def wrapper(entities):
-                if isinstance(querys, Query):
-                    return func(querys.query(entities))
-                elif isinstance(querys, Single):
-                    r = querys.query(entities)
-                    if r is not None:
-                        return func(r)
-                else:
-                    kwargs = {}
-                    for (name, query) in querys.items():
-                        kwargs[name] = query.query(entities)
-                        if kwargs[name] is None:
-                            return
-                    return func(**kwargs)
-            if kind == "pre":
-                self.add_pre(wrapper)
-            elif kind == "normal":
-                self.add_system(wrapper)
-            elif kind == "post":
-                self.add_post(wrapper)
-            return wrapper
-        return decorator
-
-    def add_plugin(self, plugin):
-        plugin.apply(self)
-        return self
+    def resource(self, name: str, type: type) -> Any:
+        return self.resources[(name, type)]
 
     def update(self):
-        for system in self.pre:
-            system(self.entities)
-
         for system in self.systems:
-            system(self.entities)
+            system(self)
 
-        for system in self.post:
-            system(self.entities)
-
-    def remove(self, entity_id):
-        del self.entities[entity_id]
-
-    def get(self, entity_id):
-        return self.entities[entity_id]
-
-class Plugin:
-    def apply(self, ecs):
-        raise NotImplementedError("Plugin must implement apply method")
-
-Name = TypeVar("Name", bound=str)
-Type = TypeVar("Type", bound=type | None)
-
-class Attr(Generic[Name], Condition):
-    def __init__(self, name: Name):
-        self.name = name
-
-    def execute(self, entity):
-        if not hasattr(entity, self.name):
-            return None
-        return getattr(entity, self.name)
-
-
-class Has(Generic[Name], Condition):
-    def __init__(self, name: Name):
-        self.name = name
-
-    def execute(self, entity):
-        if not hasattr(entity, self.name):
-            return None
-        return Ref(entity, [self.name])
-
-class Is(Generic[Type], Condition):
-    def __init__(self, type):
-        self.type = type
-
-    def execute(self, entity):
-        if not isinstance(entity, self.type):
-            return None
-        return entity
-
-class Component(Generic[Type], Condition):
-    def __init__(self, type):
-        self.type = type
-
-    def execute(self, entity):
-        for (name, value) in entity.__dict__.items():
-            if isinstance(value, self.type):
-                return value
-        return None
-
-class And(Condition):
-    def __init__(self, conditions: list[Condition]):
-        self.conditions = conditions
-
-    def execute(self, entity):
-        result = []
-        for condition in self.conditions:
-            r = condition.execute(entity)
-            if r is None:
-                return None
-            result.append(r)
-        return result
-
-class Not(Generic[C], Condition):
-    def __init__(self, condition: C):
-        self.condition = condition
-
-    def execute(self, entity):
-        if self.condition.execute(entity) is None:
-            return entity
-        return None
-
-class Ref:
-    def __init__(self, origin, attrs):
-        object.__setattr__(self, "origin", origin)
-        object.__setattr__(self, "attrs", attrs)
-        object.__setattr__(self, "index", 0)
-
-    def __setattr__(self, name, value):
-        if name in object.__getattribute__(self, "attrs"):
-            setattr(self.origin, name, value)
-        else:
-            object.__setattr__(self, name, value)
-
-    def __getattr__(self, name):
-        if name in object.__getattribute__(self, "attrs"):
-            return getattr(self.origin, name)
-        return object.__getattribute__(self, name)
-
-
-    def merge(self, other):
-        return Ref(self.origin, self.attrs + other.attrs)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self.index == len(self.attrs):
-            raise StopIteration
-        v = self.attrs[self.index]
-        self.index += 1
-        return getattr(self.origin, v)
-
-class Bundle(Entity):
+class Bundle:
     def __init__(self, **kwargs):
-        for (name, value) in kwargs.items():
-            setattr(self, name, value)
+        for (k, v) in kwargs.items():
+            setattr(self, k, v)
+
+    def from_dict(self, dict):
+        for (k, v) in dict.items():
+            setattr(self, k, v)
+
+class Field(Component):
+    def __init__(self, name: str, type: type | None = None):
+        self.name = name
+        self.type = type
+
+    def __call__(self, entity: Any, id):
+        if hasattr(entity, self.name):
+            field = getattr(entity, self.name)
+            if self.type is None or isinstance(field, self.type):
+                return field
+        return None

@@ -22,6 +22,7 @@
             test -d .nix-venv || ${pkgs.python3.interpreter} -m venv .nix-venv
             source .nix-venv/bin/activate
             pip install -r requirements.txt
+            alias run="python3 src/main.py"
           '';
         };
       });

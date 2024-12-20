@@ -1,0 +1,10 @@
+*
+
+!src
+!src/**
+!.gitignore
+!flake.nix
+!pyproject.toml
+!requirements.txt
+
+src/__pycache__

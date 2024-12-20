@@ -1,0 +1,8 @@
+cffi==1.17.1
+distlib==0.3.8
+filelock==3.16.1
+inflection==0.5.1
+platformdirs==4.3.6
+pycparser==2.22
+raylib==5.0.0.0
+virtualenv==20.26.6

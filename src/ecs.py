@@ -97,8 +97,7 @@ class Single(Generic[C]):
         return None
 
 class Resource:
-    def __init__(self, name: str, type: type):
-        self.name = name
+    def __init__(self, type: type):
         self.type = type
 
 E = TypeVar("E")
@@ -110,7 +109,7 @@ class Id(Generic[E], Component):
 class World:
     def __init__(self):
         self.entities: dict[Id, Any] = {}
-        self.resources: dict[tuple[str, type], Any] = {}
+        self.resources: dict[type, Any] = {}
         self.systems: list[Callable[[Self], None]] = []
 
         self.cid = 0
@@ -134,12 +133,12 @@ class World:
         self.systems.append(system)
         return self
 
-    def register(self, name: str, resource: Any) -> Self:
-        self.resources[(name, type(resource))] = resource
+    def register(self, resource: Any) -> Self:
+        self.resources[type(resource)] = resource
         return self
 
-    def resource(self, name: str, type: type) -> Any:
-        return self.resources[(name, type)]
+    def resource(self, type: type) -> Any:
+        return self.resources[type]
 
     def plugin(self, plugin: Callable[[Self], None]) -> Self:
         plugin(self)
@@ -169,7 +168,7 @@ def system_from_dict(f, dict):
         d = {}
         for (k, v) in dict.items():
             if isinstance(v, Resource):
-                d[k] = world.resource(v.name, v.type)
+                d[k] = world.resource(v.type)
             elif isinstance(v, Query):
                 d[k] = world.query(v)
             elif isinstance(v, Single):
@@ -186,7 +185,7 @@ def system_from_list(f, list):
         l = []
         for v in list:
             if isinstance(v, Resource):
-                l.append(world.resource(v.name, v.type))
+                l.append(world.resource(v.type))
             elif isinstance(v, Query):
                 l.append(world.query(v))
             elif isinstance(v, Single):

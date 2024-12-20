@@ -7,7 +7,7 @@ class Component:
         self.type = type
 
     def __call__(self, entity: Any, id) -> 'Component.Result':
-        for (k, v) in entity.__dict__():
+        for (k, v) in entity.__dict__.items():
             if isinstance(v, self.type):
                 return v
 
@@ -28,13 +28,13 @@ class Query(Generic[C]):
 
     def construct_from_dict(self, dict):
         def condition(entity: Any, id: Id) -> 'Component.Result':
-            new_dict = {}
+            new = Bundle()
             for (k, v) in dict.items():
                 v = v(entity, id)
                 if v is None:
                     return None
-                new_dict[k] = v
-            return new_dict
+                setattr(new, k, v)
+            return new
         self.condition = condition
 
     def construct_from_list(self, list):
@@ -66,21 +66,21 @@ class Single(Generic[C]):
             self.construct_from_dict(kwargs)
 
     def construct_from_dict(self, dict):
-        def condition(entity: Any) -> 'Component.Result':
-            new_dict = {}
+        def condition(entity: Any, id) -> 'Component.Result':
+            new = Bundle()
             for (k, v) in dict.items():
-                v = v(entity)
+                v = v(entity, id)
                 if v is None:
                     return None
-                new_dict[k] = v
-            return new_dict
+                setattr(new, k, v)
+            return new
         self.condition = condition
 
     def construct_from_list(self, list):
-        def condition(entity: Any) -> 'Component.Result':
+        def condition(entity: Any, id) -> 'Component.Result':
             new_list = []
             for f in list:
-                f = f(entity)
+                f = f(entity, id)
                 if f is None:
                     return None
                 new_list.append(f)
@@ -90,11 +90,16 @@ class Single(Generic[C]):
     Id = TypeVar("Id")
 
     def execute(self, entities: dict[Id, Any]) -> Any:
-        for entity in entities.values():
-            result = self.condition(entity)
+        for (id, entity) in entities.items():
+            result = self.condition(entity, id)
             if not result is None:
                 return result
         return None
+
+class Resource:
+    def __init__(self, name: str, type: type):
+        self.name = name
+        self.type = type
 
 E = TypeVar("E")
 
@@ -110,6 +115,8 @@ class World:
 
         self.cid = 0
 
+        self.runner: Callable[[Self], Any] = lambda x: None
+
     Spawn = TypeVar("Spawn")
     def spawn(self, entity: Spawn) -> Id[Spawn]:
         id = Id(self.cid)
@@ -123,18 +130,71 @@ class World:
     def single(self, single: Single) -> "Single.Result":
         return single.execute(self.entities)
 
-    def system(self, system: Callable[[Self], None]):
+    def system(self, system: Callable[[Self], None]) -> Self:
         self.systems.append(system)
+        return self
 
-    def register(self, name: str, resource: Any) -> None:
+    def register(self, name: str, resource: Any) -> Self:
         self.resources[(name, type(resource))] = resource
+        return self
 
     def resource(self, name: str, type: type) -> Any:
         return self.resources[(name, type)]
 
+    def plugin(self, plugin: Callable[[Self], None]) -> Self:
+        plugin(self)
+        return self
+
     def update(self):
         for system in self.systems:
             system(self)
+
+    def run(self):
+        return self.runner(self)
+
+def system(*args, **kwargs):
+    if len(args) != 0 and len(kwargs) != 0:
+        raise ValueError("System can only have positional or keyword arguments, not both")
+    def decorator(f):
+        if len(args) != 0:
+            return system_from_list(f, args)
+        elif len(kwargs) != 0:
+            return system_from_dict(f, kwargs)
+        else:
+            return f
+    return decorator
+
+def system_from_dict(f, dict):
+    def wrapper(world):
+        d = {}
+        for (k, v) in dict.items():
+            if isinstance(v, Resource):
+                d[k] = world.resource(v.name, v.type)
+            elif isinstance(v, Query):
+                d[k] = world.query(v)
+            elif isinstance(v, Single):
+                d[k] = world.single(v)
+            else:
+                raise TypeError("Invalid argument type")
+            if d[k] is None:
+                return
+        return f(**d)
+    return wrapper
+
+def system_from_list(f, list):
+    def wrapper(world):
+        l = []
+        for v in list:
+            if isinstance(v, Resource):
+                l.append(world.resource(v.name, v.type))
+            elif isinstance(v, Query):
+                l.append(world.query(v))
+            elif isinstance(v, Single):
+                l.append(world.single(v))
+            else:
+                raise TypeError("Invalid argument type")
+        return f(*l)
+    return wrapper
 
 class Bundle:
     def __init__(self, **kwargs):
@@ -156,3 +216,13 @@ class Field(Component):
             if self.type is None or isinstance(field, self.type):
                 return field
         return None
+
+class Position:
+    def __init__(self, x: float, y: float):
+        self.x = x
+        self.y = y
+
+class Velocity:
+    def __init__(self, vx: float, vy: float):
+        self.vx = vx
+        self.vy = vy
